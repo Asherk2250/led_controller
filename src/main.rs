@@ -88,7 +88,7 @@ impl eframe::App for MyApp {
             if !self.connected {
                 ui.horizontal(|ui| {
                     ui.label("CPU Port:");
-                    egui::ComboBox::from_label("")
+                    egui::ComboBox::from_id_source("cpu_port")
                         .selected_text(&self.cpu_port)
                         .show_ui(ui, |ui| {
                             for port in &self.available_ports {
@@ -99,7 +99,7 @@ impl eframe::App for MyApp {
 
                 ui.horizontal(|ui| {
                     ui.label("RAM Port:");
-                    egui::ComboBox::from_label("")
+                    egui::ComboBox::from_id_source("ram_port")
                         .selected_text(&self.ram_port)
                         .show_ui(ui, |ui| {
                             for port in &self.available_ports {
