@@ -5,110 +5,286 @@ mod stats;
 use device::Device;
 use commands::*;
 use stats::Stats;
-use std::{thread, time::Duration, io::{self, BufRead}};
-use std::sync::mpsc;
+use std::{sync::Arc, sync::Mutex};
+use std::time::Instant;
 
-fn main() {
-    // Prompt for COM ports
-    println!("Available COM ports: COM3, COM4, COM5, COM6");
-    println!("Enter COM port for CPU (e.g., COM3): ");
-    
-    let stdin = io::stdin();
-    let mut cpu_port = String::new();
-    stdin.read_line(&mut cpu_port).expect("Failed to read port");
-    let cpu_port = cpu_port.trim().to_string();
+fn main() -> Result<(), eframe::Error> {
+    let options = eframe::NativeOptions::default();
+    eframe::run_native(
+        "Framework LED Controller",
+        options,
+        Box::new(|_cc| Box::<MyApp>::default()),
+    )
+}
 
-    println!("Enter COM port for RAM (e.g., COM4): ");
-    let mut ram_port = String::new();
-    stdin.read_line(&mut ram_port).expect("Failed to read port");
-    let ram_port = ram_port.trim().to_string();
+struct MyApp {
+    cpu_port: String,
+    ram_port: String,
+    connected: bool,
+    devices: Option<(Arc<Mutex<Device>>, Arc<Mutex<Device>>)>,
+    stats: Option<Arc<Mutex<Stats>>>,
+    cpu_percent: u8,
+    ram_percent: u8,
+    brightness_level: u8,
+    color_r: u8,
+    color_g: u8,
+    color_b: u8,
+    available_ports: Vec<String>,
+    last_update: Instant,
+    status_message: String,
+}
 
-    let mut dev_cpu = match Device::connect(&cpu_port) {
-        Ok(d) => d,
-        Err(e) => {
-            println!("Failed to connect to CPU port {}: {}", cpu_port, e);
-            return;
+impl Default for MyApp {
+    fn default() -> Self {
+        let available_ports = get_available_ports();
+        Self {
+            cpu_port: available_ports.get(0).cloned().unwrap_or_default(),
+            ram_port: available_ports.get(1).cloned().unwrap_or_default(),
+            connected: false,
+            devices: None,
+            stats: None,
+            cpu_percent: 0,
+            ram_percent: 0,
+            brightness_level: 120,
+            color_r: 255,
+            color_g: 255,
+            color_b: 255,
+            available_ports,
+            last_update: Instant::now(),
+            status_message: "Ready to connect".to_string(),
         }
-    };
+    }
+}
 
-    let mut dev_ram = match Device::connect(&ram_port) {
-        Ok(d) => d,
-        Err(e) => {
-            println!("Failed to connect to RAM port {}: {}", ram_port, e);
-            return;
-        }
-    };
+impl eframe::App for MyApp {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        egui::CentralPanel::default().show(ctx, |ui| {
+            ui.heading("Framework LED Controller");
+            
+            ui.separator();
 
-    let mut stats = Stats::new();
+            // Connection Status
+            let status_color = if self.connected {
+                egui::Color32::GREEN
+            } else {
+                egui::Color32::RED
+            };
+            ui.colored_label(
+                status_color,
+                format!(
+                    "Status: {}",
+                    if self.connected {
+                        "Connected"
+                    } else {
+                        "Disconnected"
+                    }
+                ),
+            );
+            ui.label(&self.status_message);
 
-    dev_cpu.send(brightness(120));
-    dev_ram.send(brightness(120));
+            ui.separator();
 
-    // Create channel for user commands
-    let (tx, rx) = mpsc::channel();
+            // Port Selection
+            if !self.connected {
+                ui.horizontal(|ui| {
+                    ui.label("CPU Port:");
+                    egui::ComboBox::from_label("")
+                        .selected_text(&self.cpu_port)
+                        .show_ui(ui, |ui| {
+                            for port in &self.available_ports {
+                                ui.selectable_value(&mut self.cpu_port, port.clone(), port);
+                            }
+                        });
+                });
 
-    // Spawn thread to read user input
-    thread::spawn(move || {
-        let stdin = io::stdin();
-        let reader = stdin.lock();
-        for line in reader.lines() {
-            if let Ok(cmd) = line {
-                let _ = tx.send(cmd);
+                ui.horizontal(|ui| {
+                    ui.label("RAM Port:");
+                    egui::ComboBox::from_label("")
+                        .selected_text(&self.ram_port)
+                        .show_ui(ui, |ui| {
+                            for port in &self.available_ports {
+                                ui.selectable_value(&mut self.ram_port, port.clone(), port);
+                            }
+                        });
+                });
+
+                if ui.button("Connect").clicked() {
+                    self.connect_devices();
+                }
+            } else {
+                if ui.button("Disconnect").clicked() {
+                    self.disconnect_devices();
+                }
+            }
+
+            ui.separator();
+
+            // Display Metrics
+            ui.group(|ui| {
+                ui.label("System Metrics");
+                ui.horizontal(|ui| {
+                    ui.label(format!("CPU Usage: {}%", self.cpu_percent));
+                    ui.add(
+                        egui::ProgressBar::new(self.cpu_percent as f32 / 100.0)
+                            .text("CPU"),
+                    );
+                });
+                ui.horizontal(|ui| {
+                    ui.label(format!("RAM Usage: {}%", self.ram_percent));
+                    ui.add(
+                        egui::ProgressBar::new(self.ram_percent as f32 / 100.0)
+                            .text("RAM"),
+                    );
+                });
+            });
+
+            ui.separator();
+
+            if self.connected {
+                // Brightness Control
+                ui.group(|ui| {
+                    ui.label("Brightness");
+                    if ui.add(egui::Slider::new(&mut self.brightness_level, 0..=255)).changed() {
+                        self.send_brightness();
+                    }
+                    ui.label(format!("Level: {}", self.brightness_level));
+                });
+
+                ui.separator();
+
+                // Color Control
+                ui.group(|ui| {
+                    ui.label("Color (RGB)");
+                    let mut changed = false;
+                    changed |= ui.add(egui::Slider::new(&mut self.color_r, 0..=255)).changed();
+                    ui.label(format!("Red: {}", self.color_r));
+
+                    changed |= ui.add(egui::Slider::new(&mut self.color_g, 0..=255)).changed();
+                    ui.label(format!("Green: {}", self.color_g));
+
+                    changed |= ui.add(egui::Slider::new(&mut self.color_b, 0..=255)).changed();
+                    ui.label(format!("Blue: {}", self.color_b));
+
+                    if changed {
+                        self.send_color();
+                    }
+                });
+
+                ui.separator();
+
+                // Update metrics
+                if self.last_update.elapsed().as_millis() > 500 {
+                    self.update_metrics();
+                    self.last_update = Instant::now();
+                }
+
+                // Request repaint frequently
+                ctx.request_repaint();
+            }
+        });
+    }
+}
+
+impl MyApp {
+    fn connect_devices(&mut self) {
+        match Device::connect(&self.cpu_port) {
+            Ok(mut dev) => {
+                dev.send(brightness(self.brightness_level));
+                let dev_cpu = Arc::new(Mutex::new(dev));
+
+                match Device::connect(&self.ram_port) {
+                    Ok(mut dev) => {
+                        dev.send(brightness(self.brightness_level));
+                        let dev_ram = Arc::new(Mutex::new(dev));
+
+                        let mut stats = Stats::new();
+                        stats.refresh();
+
+                        self.devices = Some((dev_cpu, dev_ram));
+                        self.stats = Some(Arc::new(Mutex::new(stats)));
+                        self.connected = true;
+                        self.status_message = format!(
+                            "Connected to {} (CPU) and {} (RAM)",
+                            self.cpu_port, self.ram_port
+                        );
+                    }
+                    Err(e) => {
+                        self.status_message =
+                            format!("Failed to connect to RAM port {}: {}", self.ram_port, e);
+                    }
+                }
+            }
+            Err(e) => {
+                self.status_message =
+                    format!("Failed to connect to CPU port {}: {}", self.cpu_port, e);
             }
         }
-    });
+    }
 
-    println!("CPU display on {}", cpu_port);
-    println!("RAM display on {}", ram_port);
-    println!("Commands: brightness <0-255>, color <r> <g> <b>, quit");
+    fn disconnect_devices(&mut self) {
+        self.devices = None;
+        self.stats = None;
+        self.connected = false;
+        self.status_message = "Disconnected".to_string();
+    }
 
-    loop {
-        // Check for user input
-        if let Ok(cmd) = rx.try_recv() {
-            let parts: Vec<&str> = cmd.trim().split_whitespace().collect();
-            
-            if !parts.is_empty() {
-                match parts[0] {
-                    "quit" | "exit" => {
-                        println!("Exiting...");
-                        break;
+    fn update_metrics(&mut self) {
+        if let Some(stats_arc) = &self.stats {
+            if let Ok(mut stats) = stats_arc.lock() {
+                self.cpu_percent = stats.cpu_usage();
+                self.ram_percent = stats.ram_usage();
+
+                // Send to devices
+                if let Some((dev_cpu, dev_ram)) = &self.devices {
+                    if let Ok(mut dev) = dev_cpu.lock() {
+                        dev.send(percentage(self.cpu_percent));
                     }
-                    "brightness" => {
-                        if parts.len() > 1 {
-                            if let Ok(level) = parts[1].parse::<u8>() {
-                                dev_cpu.send(brightness(level));
-                                dev_ram.send(brightness(level));
-                                println!("Brightness set to {}", level);
-                            }
-                        }
+                    if let Ok(mut dev) = dev_ram.lock() {
+                        dev.send(percentage(self.ram_percent));
                     }
-                    "color" => {
-                        if parts.len() > 3 {
-                            if let (Ok(r), Ok(g), Ok(b)) = (
-                                parts[1].parse::<u8>(),
-                                parts[2].parse::<u8>(),
-                                parts[3].parse::<u8>(),
-                            ) {
-                                // Create color command (adjust if your protocol differs)
-                                let color_cmd = vec![MAGIC1, MAGIC2, 0x13, r, g, b];
-                                dev_cpu.send(color_cmd.clone());
-                                dev_ram.send(color_cmd);
-                                println!("Color set to RGB({}, {}, {})", r, g, b);
-                            }
-                        }
-                    }
-                    _ => println!("Unknown command: {}", parts[0]),
                 }
             }
         }
+    }
 
-        // Update displays - CPU on one device, RAM on the other
-        let cpu = stats.cpu_usage();
-        let ram = stats.ram_usage();
-        dev_cpu.send(percentage(cpu));
-        dev_ram.send(percentage(ram));
+    fn send_brightness(&mut self) {
+        if let Some((dev_cpu, dev_ram)) = &self.devices {
+            if let Ok(mut dev) = dev_cpu.lock() {
+                dev.send(brightness(self.brightness_level));
+            }
+            if let Ok(mut dev) = dev_ram.lock() {
+                dev.send(brightness(self.brightness_level));
+            }
+        }
+    }
 
-        thread::sleep(Duration::from_millis(500));
+    fn send_color(&mut self) {
+        if let Some((dev_cpu, dev_ram)) = &self.devices {
+            let color_cmd = vec![MAGIC1, MAGIC2, 0x13, self.color_r, self.color_g, self.color_b];
+            if let Ok(mut dev) = dev_cpu.lock() {
+                dev.send(color_cmd.clone());
+            }
+            if let Ok(mut dev) = dev_ram.lock() {
+                dev.send(color_cmd);
+            }
+        }
     }
 }
+
+fn get_available_ports() -> Vec<String> {
+    serialport::available_ports()
+        .map(|ports| {
+            ports
+                .iter()
+                .filter_map(|p| match p {
+                    serialport::SerialPortInfo {
+                        port_name,
+                        port_type: _,
+                    } => Some(port_name.clone()),
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 

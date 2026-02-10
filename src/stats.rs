@@ -12,6 +12,11 @@ impl Stats {
         Self { sys }
     }
 
+    pub fn refresh(&mut self) {
+        self.sys.refresh_cpu();
+        self.sys.refresh_memory();
+    }
+
     pub fn cpu_usage(&mut self) -> u8 {
         self.sys.refresh_cpu();
         let usage = self.sys.global_cpu_info().cpu_usage();
