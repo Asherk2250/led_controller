@@ -18,17 +18,17 @@ fn main() -> Result<(), eframe::Error> {
 }
 
 struct MyApp {
-    cpu_port: String,
-    ram_port: String,
-    connected: bool,
-    devices: Option<(Arc<Mutex<Device>>, Arc<Mutex<Device>>)>,
+    left_port: String,
+    right_port: String,
+    left_connected: bool,
+    right_connected: bool,
+    left_device: Option<Arc<Mutex<Device>>>,
+    right_device: Option<Arc<Mutex<Device>>>,
     stats: Option<Arc<Mutex<Stats>>>,
     cpu_percent: u8,
     ram_percent: u8,
     brightness_level: u8,
-    color_r: u8,
-    color_g: u8,
-    color_b: u8,
+    current_preset: String,
     available_ports: Vec<String>,
     last_update: Instant,
     status_message: String,
@@ -38,17 +38,17 @@ impl Default for MyApp {
     fn default() -> Self {
         let available_ports = get_available_ports();
         Self {
-            cpu_port: available_ports.get(0).cloned().unwrap_or_default(),
-            ram_port: available_ports.get(1).cloned().unwrap_or_default(),
-            connected: false,
-            devices: None,
+            left_port: available_ports.get(0).cloned().unwrap_or_default(),
+            right_port: available_ports.get(1).cloned().unwrap_or_default(),
+            left_connected: false,
+            right_connected: false,
+            left_device: None,
+            right_device: None,
             stats: None,
             cpu_percent: 0,
             ram_percent: 0,
             brightness_level: 120,
-            color_r: 255,
-            color_g: 255,
-            color_b: 255,
+            current_preset: "idle".to_string(),
             available_ports,
             last_update: Instant::now(),
             status_message: "Ready to connect".to_string(),
@@ -60,87 +60,95 @@ impl eframe::App for MyApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.heading("Framework LED Controller");
-            
-            ui.separator();
-
-            // Connection Status
-            let status_color = if self.connected {
-                egui::Color32::GREEN
-            } else {
-                egui::Color32::RED
-            };
-            ui.colored_label(
-                status_color,
-                format!(
-                    "Status: {}",
-                    if self.connected {
-                        "Connected"
-                    } else {
-                        "Disconnected"
-                    }
-                ),
-            );
             ui.label(&self.status_message);
-
             ui.separator();
 
-            // Port Selection
-            if !self.connected {
-                ui.horizontal(|ui| {
-                    ui.label("CPU Port:");
-                    egui::ComboBox::from_id_source("cpu_port")
-                        .selected_text(&self.cpu_port)
-                        .show_ui(ui, |ui| {
-                            for port in &self.available_ports {
-                                ui.selectable_value(&mut self.cpu_port, port.clone(), port);
-                            }
-                        });
-                });
-
-                ui.horizontal(|ui| {
-                    ui.label("RAM Port:");
-                    egui::ComboBox::from_id_source("ram_port")
-                        .selected_text(&self.ram_port)
-                        .show_ui(ui, |ui| {
-                            for port in &self.available_ports {
-                                ui.selectable_value(&mut self.ram_port, port.clone(), port);
-                            }
-                        });
-                });
-
-                if ui.button("Connect").clicked() {
-                    self.connect_devices();
-                }
-            } else {
-                if ui.button("Disconnect").clicked() {
-                    self.disconnect_devices();
-                }
-            }
-
-            ui.separator();
-
-            // Display Metrics
+            // Left Matrix Section
             ui.group(|ui| {
-                ui.label("System Metrics");
-                ui.horizontal(|ui| {
-                    ui.label(format!("CPU Usage: {}%", self.cpu_percent));
-                    ui.add(
-                        egui::ProgressBar::new(self.cpu_percent as f32 / 100.0)
-                            .text("CPU"),
-                    );
-                });
-                ui.horizontal(|ui| {
-                    ui.label(format!("RAM Usage: {}%", self.ram_percent));
-                    ui.add(
-                        egui::ProgressBar::new(self.ram_percent as f32 / 100.0)
-                            .text("RAM"),
-                    );
-                });
+                ui.heading("Left Matrix");
+                let left_status = if self.left_connected { "Connected" } else { "Disconnected" };
+                ui.colored_label(
+                    if self.left_connected { egui::Color32::GREEN } else { egui::Color32::RED },
+                    format!("Status: {}", left_status)
+                );
+
+                if !self.left_connected {
+                    ui.horizontal(|ui| {
+                        ui.label("Port:");
+                        egui::ComboBox::from_id_source("left_port")
+                            .selected_text(&self.left_port)
+                            .show_ui(ui, |ui| {
+                                for port in &self.available_ports {
+                                    ui.selectable_value(&mut self.left_port, port.clone(), port);
+                                }
+                            });
+                    });
+                    if ui.button("Connect Left").clicked() {
+                        self.connect_left();
+                    }
+                } else {
+                    if ui.button("Disconnect Left").clicked() {
+                        self.disconnect_left();
+                    }
+                }
             });
 
             ui.separator();
 
-            if self.connected {
+            // Right Matrix Section
+            ui.group(|ui| {
+                ui.heading("Right Matrix");
+                let right_status = if self.right_connected { "Connected" } else { "Disconnected" };
+                ui.colored_label(
+                    if self.right_connected { egui::Color32::GREEN } else { egui::Color32::RED },
+                    format!("Status: {}", right_status)
+                );
+
+                if !self.right_connected {
+                    ui.horizontal(|ui| {
+                        ui.label("Port:");
+                        egui::ComboBox::from_id_source("right_port")
+                            .selected_text(&self.right_port)
+                            .show_ui(ui, |ui| {
+                                for port in &self.available_ports {
+                                    ui.selectable_value(&mut self.right_port, port.clone(), port);
+                                }
+                            });
+                    });
+                    if ui.button("Connect Right").clicked() {
+                        self.connect_right();
+                    }
+                } else {
+                    if ui.button("Disconnect Right").clicked() {
+                        self.disconnect_right();
+                    }
+                }
+            });
+
+            ui.separator();
+
+            if self.left_connected || self.right_connected {
+                // Display Metrics
+                ui.group(|ui| {
+                    ui.label("System Metrics");
+                    ui.horizontal(|ui| {
+                        ui.label(format!("CPU Usage: {}%", self.cpu_percent));
+                        ui.add(
+                            egui::ProgressBar::new(self.cpu_percent as f32 / 100.0)
+                                .text("CPU"),
+                        );
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label(format!("RAM Usage: {}%", self.ram_percent));
+                        ui.add(
+                            egui::ProgressBar::new(self.ram_percent as f32 / 100.0)
+                                .text("RAM"),
+                        );
+                    });
+                });
+
+                ui.separator();
+
                 // Brightness Control
                 ui.group(|ui| {
                     ui.label("Brightness");
@@ -152,22 +160,16 @@ impl eframe::App for MyApp {
 
                 ui.separator();
 
-                // Color Control
+                // Preset Selection
                 ui.group(|ui| {
-                    ui.label("Color (RGB)");
-                    let mut changed = false;
-                    changed |= ui.add(egui::Slider::new(&mut self.color_r, 0..=255)).changed();
-                    ui.label(format!("Red: {}", self.color_r));
-
-                    changed |= ui.add(egui::Slider::new(&mut self.color_g, 0..=255)).changed();
-                    ui.label(format!("Green: {}", self.color_g));
-
-                    changed |= ui.add(egui::Slider::new(&mut self.color_b, 0..=255)).changed();
-                    ui.label(format!("Blue: {}", self.color_b));
-
-                    if changed {
-                        self.send_color();
-                    }
+                    ui.label("Preset");
+                    egui::ComboBox::from_id_source("preset")
+                        .selected_text(&self.current_preset)
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(&mut self.current_preset, "idle".to_string(), "Idle Animation");
+                            ui.selectable_value(&mut self.current_preset, "cpu".to_string(), "CPU Usage");
+                            ui.selectable_value(&mut self.current_preset, "ram".to_string(), "RAM Usage");
+                        });
                 });
 
                 ui.separator();
@@ -186,46 +188,64 @@ impl eframe::App for MyApp {
 }
 
 impl MyApp {
-    fn connect_devices(&mut self) {
-        match Device::connect(&self.cpu_port) {
+    fn connect_left(&mut self) {
+        match Device::connect(&self.left_port) {
             Ok(mut dev) => {
                 dev.send(brightness(self.brightness_level));
-                let dev_cpu = Arc::new(Mutex::new(dev));
+                self.left_device = Some(Arc::new(Mutex::new(dev)));
+                self.left_connected = true;
+                self.status_message = format!("Left matrix connected to {}", self.left_port);
 
-                match Device::connect(&self.ram_port) {
-                    Ok(mut dev) => {
-                        dev.send(brightness(self.brightness_level));
-                        let dev_ram = Arc::new(Mutex::new(dev));
-
-                        let mut stats = Stats::new();
-                        stats.refresh();
-
-                        self.devices = Some((dev_cpu, dev_ram));
-                        self.stats = Some(Arc::new(Mutex::new(stats)));
-                        self.connected = true;
-                        self.status_message = format!(
-                            "Connected to {} (CPU) and {} (RAM)",
-                            self.cpu_port, self.ram_port
-                        );
-                    }
-                    Err(e) => {
-                        self.status_message =
-                            format!("Failed to connect to RAM port {}: {}", self.ram_port, e);
-                    }
+                // Initialize stats if this is the first connection
+                if self.stats.is_none() {
+                    let mut stats = Stats::new();
+                    stats.refresh();
+                    self.stats = Some(Arc::new(Mutex::new(stats)));
                 }
             }
             Err(e) => {
-                self.status_message =
-                    format!("Failed to connect to CPU port {}: {}", self.cpu_port, e);
+                self.status_message = format!("Failed to connect left to {}: {}", self.left_port, e);
             }
         }
     }
 
-    fn disconnect_devices(&mut self) {
-        self.devices = None;
-        self.stats = None;
-        self.connected = false;
-        self.status_message = "Disconnected".to_string();
+    fn connect_right(&mut self) {
+        match Device::connect(&self.right_port) {
+            Ok(mut dev) => {
+                dev.send(brightness(self.brightness_level));
+                self.right_device = Some(Arc::new(Mutex::new(dev)));
+                self.right_connected = true;
+                self.status_message = format!("Right matrix connected to {}", self.right_port);
+
+                // Initialize stats if this is the first connection
+                if self.stats.is_none() {
+                    let mut stats = Stats::new();
+                    stats.refresh();
+                    self.stats = Some(Arc::new(Mutex::new(stats)));
+                }
+            }
+            Err(e) => {
+                self.status_message = format!("Failed to connect right to {}: {}", self.right_port, e);
+            }
+        }
+    }
+
+    fn disconnect_left(&mut self) {
+        self.left_device = None;
+        self.left_connected = false;
+        if !self.right_connected {
+            self.stats = None;
+        }
+        self.status_message = "Left matrix disconnected".to_string();
+    }
+
+    fn disconnect_right(&mut self) {
+        self.right_device = None;
+        self.right_connected = false;
+        if !self.left_connected {
+            self.stats = None;
+        }
+        self.status_message = "Right matrix disconnected".to_string();
     }
 
     fn update_metrics(&mut self) {
@@ -234,38 +254,60 @@ impl MyApp {
                 self.cpu_percent = stats.cpu_usage();
                 self.ram_percent = stats.ram_usage();
 
-                // Send to devices
-                if let Some((dev_cpu, dev_ram)) = &self.devices {
-                    if let Ok(mut dev) = dev_cpu.lock() {
-                        dev.send(percentage(self.cpu_percent));
+                // Send commands based on preset
+                match self.current_preset.as_str() {
+                    "cpu" => {
+                        if let Some(left_dev) = &self.left_device {
+                            if let Ok(mut dev) = left_dev.lock() {
+                                dev.send(percentage(self.cpu_percent));
+                            }
+                        }
+                        if let Some(right_dev) = &self.right_device {
+                            if let Ok(mut dev) = right_dev.lock() {
+                                dev.send(percentage(self.cpu_percent));
+                            }
+                        }
                     }
-                    if let Ok(mut dev) = dev_ram.lock() {
-                        dev.send(percentage(self.ram_percent));
+                    "ram" => {
+                        if let Some(left_dev) = &self.left_device {
+                            if let Ok(mut dev) = left_dev.lock() {
+                                dev.send(percentage(self.ram_percent));
+                            }
+                        }
+                        if let Some(right_dev) = &self.right_device {
+                            if let Ok(mut dev) = right_dev.lock() {
+                                dev.send(percentage(self.ram_percent));
+                            }
+                        }
                     }
+                    "idle" => {
+                        // Idle animation - send neutral command
+                        if let Some(left_dev) = &self.left_device {
+                            if let Ok(mut dev) = left_dev.lock() {
+                                dev.send(vec![MAGIC1, MAGIC2, 0x14]);
+                            }
+                        }
+                        if let Some(right_dev) = &self.right_device {
+                            if let Ok(mut dev) = right_dev.lock() {
+                                dev.send(vec![MAGIC1, MAGIC2, 0x14]);
+                            }
+                        }
+                    }
+                    _ => {}
                 }
             }
         }
     }
 
     fn send_brightness(&mut self) {
-        if let Some((dev_cpu, dev_ram)) = &self.devices {
-            if let Ok(mut dev) = dev_cpu.lock() {
-                dev.send(brightness(self.brightness_level));
-            }
-            if let Ok(mut dev) = dev_ram.lock() {
+        if let Some(left_dev) = &self.left_device {
+            if let Ok(mut dev) = left_dev.lock() {
                 dev.send(brightness(self.brightness_level));
             }
         }
-    }
-
-    fn send_color(&mut self) {
-        if let Some((dev_cpu, dev_ram)) = &self.devices {
-            let color_cmd = vec![MAGIC1, MAGIC2, 0x13, self.color_r, self.color_g, self.color_b];
-            if let Ok(mut dev) = dev_cpu.lock() {
-                dev.send(color_cmd.clone());
-            }
-            if let Ok(mut dev) = dev_ram.lock() {
-                dev.send(color_cmd);
+        if let Some(right_dev) = &self.right_device {
+            if let Ok(mut dev) = right_dev.lock() {
+                dev.send(brightness(self.brightness_level));
             }
         }
     }
